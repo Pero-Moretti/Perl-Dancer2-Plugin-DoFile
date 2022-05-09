@@ -2,6 +2,7 @@
 /.build
 /_build*
 /Build
+/Makefile
 MYMETA.*
 !META.json
 /.prove
