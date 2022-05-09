@@ -125,7 +125,7 @@ __END__
 
 =head1 NAME
 
-Dancer2::Plugin::DoFile
+Dancer2::Plugin::DoFile - A file based MVC style plugin for Dancer2
 
 =head1 SYNOPSYS
 
