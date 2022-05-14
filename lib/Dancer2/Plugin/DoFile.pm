@@ -67,7 +67,17 @@ sub dofile {
   $path =~ s|~||g;
 
   if (!$path) { $path = $plugin->default_file; }
-  if (-d $pageroot."/$path") { $path .= "/".$plugin->default_file; }
+  if (-d $pageroot."/$path") {
+    if ($path =~ /\/$/) {
+      $path .= "/".$plugin->default_file;
+    } else {
+      return {
+        url => "/$path/",
+        redirect => 1,
+        done => 1
+      };
+    }
+  }
 
 #  $plugin->app->log( info => "DoFile looking for $path from $pageroot\n");
 
@@ -88,7 +98,7 @@ OUTER:
       # "Do" the file
       if ($cururl && -f $pageroot."/".$cururl.$m.$ext) {
 #        $plugin->app->log( info => "DoFile ".$pageroot."/".$cururl.$m.$ext."\n");
-        our $args = { path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash };
+        our $args = { path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env };
         my $result = do($pageroot."/".$cururl.$m.$ext);
         if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$ext: $@ $!\n"); }
         if (defined $result && ref $result eq "HASH") {
@@ -305,7 +315,7 @@ This is a method for internally redirecting. For example, returning:
     }
 
 Will cause DoFile to start over with the new URI C<account/login>, without
-processing any more files from the old URI
+processing any more files from the old URI. The stash is preserved.
 
 =head3 Content
 
