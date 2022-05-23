@@ -27,6 +27,8 @@ has extension_list => (
 
 plugin_keywords 'dofile';
 
+my $dofiles;
+
 sub BUILD {
     my $self     = shift;
     my $settings = $self->config;
@@ -79,10 +81,6 @@ sub dofile {
     }
   }
 
-#  $plugin->app->log( info => "DoFile looking for $path from $pageroot\n");
-
-  my $successful = 0;
-
 OUTER:
   foreach my $ext (@{$plugin->extension_list}) {
     foreach my $m ("", "-$method") {
@@ -93,14 +91,24 @@ OUTER:
       while (!-f $pageroot."/".$cururl.$m.$ext && $cururl =~ s/\/([^\/]*)$//) {
         if ($1) { unshift(@path, $1); }
       }
-      # To do - look for appropriate js files to include
 
       # "Do" the file
-      if ($cururl && -f $pageroot."/".$cururl.$m.$ext) {
-#        $plugin->app->log( info => "DoFile ".$pageroot."/".$cururl.$m.$ext."\n");
-        our $args = { path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env };
-        my $result = do($pageroot."/".$cururl.$m.$ext);
-        if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$ext: $@ $!\n"); }
+      if ($cururl) {
+        my $result;
+        if (defined $dofiles{$pageroot."/".$cururl.$m.$ext}) {
+          $result = $dofiles{$pageroot."/".$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+
+        } elsif (-f $pageroot."/".$cururl.$m.$ext) {
+          our $args = { path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env };
+
+          $result = do($pageroot."/".$cururl.$m.$ext);
+          if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$ext: $@ $!\n"); }
+          if (ref $result eq "CODE") {
+            $dofiles{$pageroot."/".$cururl.$m.$ext} = $result;
+            $result = $result->($args);
+          }
+        }
+
         if (defined $result && ref $result eq "HASH") {
           if (defined $result->{url} && !defined $result->{done}) {
             $path = $result->{url};
