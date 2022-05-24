@@ -1,5 +1,5 @@
 package Dancer2::Plugin::DoFile;
-$Dancer2::Plugin::DoFile::VERSION = '0.0';
+$Dancer2::Plugin::DoFile::VERSION = '0.1';
 # ABSTRACT: File-based MVC plugin for Dancer2
 
 use strict;
@@ -27,7 +27,7 @@ has extension_list => (
 
 plugin_keywords 'dofile';
 
-my $dofiles;
+my %dofiles;
 
 sub BUILD {
     my $self     = shift;
