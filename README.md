@@ -161,7 +161,7 @@ This is a method for internally redirecting. For example, returning:
     }
 
 Will cause DoFile to start over with the new URI `account/login`, without
-processing any more files from the old URI
+processing any more files from the old URI. The stash is preserved.
 
 ### Content
 
