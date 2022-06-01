@@ -1,5 +1,4 @@
 ABOUT.pod
-Dancer2-Plugin-DoFile-0.1.tar.gz
 lib/Dancer2/Plugin/DoFile.pm
 LICENSE
 Makefile.PL
