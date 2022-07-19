@@ -1,5 +1,5 @@
 package Dancer2::Plugin::DoFile;
-$Dancer2::Plugin::DoFile::VERSION = '0.12';
+$Dancer2::Plugin::DoFile::VERSION = '0.13';
 # ABSTRACT: File-based MVC plugin for Dancer2
 
 use strict;
@@ -81,6 +81,7 @@ sub dofile {
     }
   }
 
+  if (!defined $stash->{dofiles_executed}) { $stash->{dofiles_executed} = 0; }
 OUTER:
   foreach my $ext (@{$plugin->extension_list}) {
     foreach my $m ("", "-$method") {
@@ -96,14 +97,18 @@ OUTER:
       if ($cururl) {
         my $result;
         if (defined $dofiles{$pageroot."/".$cururl.$m.$ext}) {
+          $stash->{dofiles}->{$cururl.$m.$ext} = { origin => "cache", order => $stash->{dofiles_executed}++ };
           $result = $dofiles{$pageroot."/".$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
 
         } elsif (-f $pageroot."/".$cururl.$m.$ext) {
+          $stash->{dofiles}->{$cururl.$m.$ext} = { origin => "file", order => $stash->{dofiles_executed}++ };
+
           our $args = { path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env };
 
           $result = do($pageroot."/".$cururl.$m.$ext);
           if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$ext: $@ $!\n"); }
           if (ref $result eq "CODE") {
+            $stash->{dofiles}->{$cururl.$m.$ext}->{cached} = 1;
             $dofiles{$pageroot."/".$cururl.$m.$ext} = $result;
             $result = $result->($args);
           }
@@ -115,6 +120,7 @@ OUTER:
             next OUTER;
           }
           if (defined $result->{content} || $result->{url} || $result->{done}) {
+            $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
             return $result;
           } else {
             $stash = $merger->merge($stash, $result);
@@ -122,10 +128,12 @@ OUTER:
           # Move on to the next file
 
         } elsif (ref $result eq "ARRAY") {
+          $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
           return { content => $result };
 
         } elsif (!ref $result && $result) {
           # do we assume this is HTML? Or a file to use in templating? Who knows!
+          $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
           return { content => $result };
 
         }
