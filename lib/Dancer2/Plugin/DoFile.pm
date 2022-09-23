@@ -106,7 +106,7 @@ sub controller {
 
   if (!$path) { $path = $plugin->default_file; }
   if (-d $pageroot."/$path") {
-    if ($path =~ /\/$/) {
+    if ($path !~ /\/$/) {
       $path .= "/".$plugin->default_file;
     } else {
       return {
