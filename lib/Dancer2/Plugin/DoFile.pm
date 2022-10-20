@@ -154,6 +154,7 @@ OUTER:
         $opts{stash} = $stash;
 
         if (defined $result && ref $result eq "HASH") {
+          $stash = $merger->merge($stash, $result);
           if (defined $result->{url} && !defined $result->{done}) {
             $path = $result->{url};
             next OUTER;
@@ -166,8 +167,6 @@ OUTER:
           } elsif (defined $result->{content} || $result->{url} || $result->{done}) {
             $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
             return $result;
-          } else {
-            $stash = $merger->merge($stash, $result);
           }
           # Move on to the next file
 
@@ -186,7 +185,14 @@ OUTER:
   }
 
   # If we got here we didn't find a controller. We should fail over to see if it's just a view on its own (effectively this module or the route acts as the controller)
-  return $plugin->view($arg, %opts);
+  $opts{stash} = $stash;
+  if ($stash->{view}) {
+    $opts{'controller_arg'} = $arg;
+    return $plugin->view($stash->{view}, %opts);
+  } else {
+    return $plugin->view($arg, %opts);
+  }
+
 }
 
 sub view {
