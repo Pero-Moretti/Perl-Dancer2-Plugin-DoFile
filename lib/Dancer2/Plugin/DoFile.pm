@@ -10,6 +10,7 @@ use Dancer2::Plugin;
 use JSON;
 use Hash::Merge;
 use HTTP::Accept;
+use Time::HiRes;
 
 # Not sure if this is necessary at this point, as the model
 # Should in general not be dynamically loaded...
@@ -37,6 +38,10 @@ has view_extension_list => (
 has default_file => (
     is      => 'rw',
     default => sub {'index'},
+);
+has timings => (
+    is      => 'rw',
+    default => sub { 0; }
 );
 
 # This is old config syntax and should not be used
@@ -134,7 +139,13 @@ OUTER:
         my $result;
         if (defined $dofiles{$pageroot."/".$cururl.$m.$ext}) {
           $stash->{dofiles}->{$cururl.$m.$ext} = { origin => "cache", order => $stash->{dofiles_executed}++ };
-          $result = $dofiles{$pageroot."/".$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+          if ($plugin->timings) {
+            my $start = time();
+            $result = $dofiles{$pageroot."/".$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+            $stash->{dofiles}->{$cururl.$m.$ext}->{time} = time() - $start;
+          } else {
+            $result = $dofiles{$pageroot."/".$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+          }
 
         } elsif (-f $pageroot."/".$cururl.$m.$ext) {
           $stash->{dofiles}->{$cururl.$m.$ext} = { origin => "file", order => $stash->{dofiles_executed}++ };
@@ -146,7 +157,13 @@ OUTER:
           if (ref $result eq "CODE") {
             $stash->{dofiles}->{$cururl.$m.$ext}->{cached} = 1;
             $dofiles{$pageroot."/".$cururl.$m.$ext} = $result;
-            $result = $result->($args);
+            if ($plugin->timings) {
+              my $start = time();
+              $result = $result->($args);
+              $stash->{dofiles}->{$cururl.$m.$ext}->{time} = time() - $start;
+            } else {
+              $result = $result->($args);
+            }
           }
         }
 
@@ -154,7 +171,8 @@ OUTER:
         $opts{stash} = $stash;
 
         if (defined $result && ref $result eq "HASH") {
-          $stash = $merger->merge($stash, $result);
+          merge($stash, $result);
+#          $stash = $merger->merge($stash, $result);
           if (defined $result->{url} && !defined $result->{done}) {
             $path = $result->{url};
             next OUTER;
@@ -220,8 +238,6 @@ sub view {
   # This can lead to some interesting results if someone doesn't explicitly return undef when they want to fall through to the next file
   # as perl will return the last evaluated value, which would be intepretted as content according to the above rules
 
-  my $merger = Hash::Merge->new('RIGHT_PRECEDENT');
-
   my $stash = $opts{stash} || {};
 
   # Safety first...
@@ -259,7 +275,13 @@ OUTER:
             my $result;
             if (defined $dofiles{$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext}) {
               $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext} = { origin => "cache", order => $stash->{dofiles_executed}++ };
-              $result = $dofiles{$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+              if ($plugin->timings) {
+                my $start = time();
+                $result = $dofiles{$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+                $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{time} = time() - $start;
+              } else {
+                $result = $dofiles{$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+              }
 
             } elsif (-f $pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext) {
               $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext} = { origin => "file", order => $stash->{dofiles_executed}++ };
@@ -271,12 +293,15 @@ OUTER:
               if (ref $result eq "CODE") {
                 $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{cached} = 1;
                 $dofiles{$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext} = $result;
-                $result = $result->($args);
+                if ($plugin->timings) {
+                  my $start = time();
+                  $result = $result->($args);
+                  $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{time} = time() - $start;
+                } else {
+                  $result = $result->($args);
+                }
               }
             }
-
-            # We need to reassign the stash to the opts hash as the merge will have destroyed the old stash
-            $opts{stash} = $stash;
 
             if (defined $result && ref $result eq "HASH") {
               $result->{'content-type'} = $acceptext->{$fmt};
@@ -327,7 +352,7 @@ sub dofile {
   # This can lead to some interesting results if someone doesn't explicitly return undef when they want to fall through to the next file
   # as perl will return the last evaluated value, which would be intepretted as content according to the above rules
 
-  my $merger = Hash::Merge->new('RIGHT_PRECEDENT');
+  # my $merger = Hash::Merge->new('RIGHT_PRECEDENT');
 
   my $stash = $opts{stash} || {};
 
@@ -392,7 +417,8 @@ OUTER:
             $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
             return $result;
           } else {
-            $stash = $merger->merge($stash, $result);
+            merge($stash, $result);
+#            $stash = $merger->merge($stash, $result);
           }
           # Move on to the next file
 
@@ -421,6 +447,17 @@ sub view_pathname {
 sub layout_pathname {
   my ( $self, $layout ) = @_;
   return $layout;
+}
+sub merge {
+  my $src = shift;
+  my $dup = shift;
+  foreach my $k (keys %{$dup}) {
+    if (ref $dup->{$k} eq "HASH" && $src->{$k} && ref $src->{$k} eq "HASH") {
+      merge($src->{$k}, $dup->{$k});
+    } else {
+      $src->{$k} = $dup->{$k};
+    }
+  }
 }
 
 1;
