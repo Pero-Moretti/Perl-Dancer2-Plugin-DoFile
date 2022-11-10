@@ -748,7 +748,7 @@ contain one or more elements giving some information about what's gone on.
     if (defined $stash->{dofiles}) {
       my @files = ();
       foreach my $f (sort { $stash->{dofiles}->{$a}->{order} <=> $stash->{dofiles}->{$b}->{order} } keys %{$stash->{dofiles}}) {
-        my $text = $stash->{dofiles}->{$f}->{order}.": $f";
+        my $text = $stash->{dofiles}->{$f}->{order}.": $f [".$stash->{dofiles}->{$f}->{type}."]";
         if ($stash->{dofiles}->{$f}->{origin} eq "cache") { $text .= " [FROM CACHE]"; }
         if ($stash->{dofiles}->{$f}->{origin} eq "file") { $text .= " [FROM FILE]"; }
         if ($stash->{dofiles}->{$f}->{cached}) { $text .= " [WAS CACHED]"; }
