@@ -1,5 +1,4 @@
 package Dancer2::Plugin::DoFile;
-
 use strict;
 use warnings;
 
@@ -11,6 +10,7 @@ use Dancer2::Plugin;
 use JSON;
 use HTTP::Accept;
 use Time::HiRes qw(time);
+use Hash::Merge;
 
 # Not sure if this is necessary at this point, as the model
 # Should in general not be dynamically loaded...
@@ -47,6 +47,11 @@ has timings => (
     default => sub { 0; }
 );
 
+has trace => (
+    is      => 'rw',
+    default => sub {0},
+);
+
 # This is old config syntax and should not be used
 # Only preserved as temporary backwards compatibility
 has page_loc => (
@@ -61,6 +66,10 @@ has extension_list => (
 
 # Old method
 # plugin_keywords 'dofile';
+
+# New methods
+plugin_keywords 'controller';
+plugin_keywords 'view';
 
 # New methods
 plugin_keywords 'controller';
@@ -82,6 +91,243 @@ sub BUILD {
 }
 
 sub controller {
+  my $plugin = shift;
+  my $arg = shift;
+  my %opts = @_;
+
+  my $app = $plugin->app;
+  my $settings = $app->settings;
+  my $method = $app->request->method;
+  my $pageroot = $settings->{appdir};
+  if ($pageroot !~ /\/$/) {
+    $pageroot .= "/";
+  }
+  $pageroot .= $plugin->controller_loc;
+
+  my $path = $arg || $app->request->path;
+
+  # If any one of these returns content then we stop processing any more of them
+  # Content is defined as an array ref (it's an Obj2HTML array), a hashref with a "content" element, or a scalar (assumed HTML string - it's not checked!)
+  # This can lead to some interesting results if someone doesn't explicitly return undef when they want to fall through to the next file
+  # as perl will return the last evaluated value, which would be intepretted as content according to the above rules
+
+  my $merger = Hash::Merge->new('RIGHT_PRECEDENT');
+
+  my $stash = $opts{stash} || {};
+
+  # Safety first...
+  $path =~ s|/$|"/".$plugin->default_file|e;
+  $path =~ s|^/+||;
+  $path =~ s|\.\./||g;
+  $path =~ s|~||g;
+
+  if (!$path) { $path = $plugin->default_file; }
+  if (-d $pageroot."/$path") {
+    if ($path !~ /\/$/) {
+      $path .= "/".$plugin->default_file;
+    } else {
+      return {
+        url => "/$path/",
+        redirect => 1,
+        done => 1
+      };
+    }
+  }
+
+  if (!defined $stash->{dofiles_executed}) { $stash->{dofiles_executed} = 0; }
+OUTER:
+  foreach my $ext (@{$plugin->controller_extension_list}) {
+    foreach my $m ("", "-$method", "-ANY") {
+      my $cururl = $path;
+      my @path = ();
+
+      # This iterates back through the path to find the closest FILE downstream, using the rest of the url as a "path" argument
+      if ($plugin->trace) { print STDERR "DoFile Test: ".$pageroot."/".$cururl.$m.$ext."\n"; }
+      while (!-f $pageroot."/".$cururl.$m.$ext && $cururl =~ s/\/([^\/]*)$//) {
+        if ($1) { unshift(@path, $1); }
+        if ($plugin->trace) { print STDERR "DoFile Test: ".$pageroot."/".$cururl.$m.$ext."\n"; }
+      }
+
+      # "Do" the file
+      if ($cururl) {
+        my $result;
+        if (defined $dofiles{$pageroot."/".$cururl.$m.$ext}) {
+          $stash->{dofiles}->{$cururl.$m.$ext} = { origin => "cache", order => $stash->{dofiles_executed}++ };
+          $result = $dofiles{$pageroot."/".$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+
+        } elsif (-f $pageroot."/".$cururl.$m.$ext) {
+          $stash->{dofiles}->{$cururl.$m.$ext} = { origin => "file", order => $stash->{dofiles_executed}++ };
+
+          our $args = { path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env };
+
+          $result = do($pageroot."/".$cururl.$m.$ext);
+          if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$ext: $@ $!\n"); }
+          if (ref $result eq "CODE") {
+            $stash->{dofiles}->{$cururl.$m.$ext}->{cached} = 1;
+            $dofiles{$pageroot."/".$cururl.$m.$ext} = $result;
+            $result = $result->($args);
+          }
+        }
+
+        # We need to reassign the stash to the opts hash as the merge will have destroyed the old stash
+        $opts{stash} = $stash;
+
+        if (defined $result && ref $result eq "HASH") {
+          $stash = $merger->merge($stash, $result);
+          if (defined $result->{url} && !defined $result->{done}) {
+            $path = $result->{url};
+            next OUTER;
+          }
+          if (defined $result->{view} && $result->{done}) {
+            $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
+            $stash->{'controller_result'} = $result;
+            return $plugin->view($result->{view}, path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env );
+
+          } elsif (defined $result->{content} || $result->{url} || $result->{done}) {
+            $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
+            return $result;
+          }
+          # Move on to the next file
+
+        } elsif (ref $result eq "ARRAY") {
+          $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
+          return { content => $result };
+
+        } elsif (!ref $result && $result) {
+          # do we assume this is HTML? Or a file to use in templating? Who knows!
+          $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
+          return { content => $result };
+
+        }
+      }
+    }
+  }
+
+  # If we got here we didn't find a controller. We should fail over to see if it's just a view on its own (effectively this module or the route acts as the controller)
+  $opts{stash} = $stash;
+  if ($stash->{view}) {
+    $opts{'controller_arg'} = $arg;
+    return $plugin->view($stash->{view}, %opts);
+  } else {
+    return $plugin->view($arg, %opts);
+  }
+
+}
+
+sub view {
+  my $plugin = shift;
+  my $arg = shift;
+  my %opts = @_;
+
+  my $app = $plugin->app;
+  my $settings = $app->settings;
+  my $method = $app->request->method;
+
+  my $accept  = HTTP::Accept->new( $app->request->accept )->values();
+  push(@{$accept}, "");
+
+  my $pageroot = $settings->{appdir};
+  if ($pageroot !~ /\/$/) {
+    $pageroot .= "/";
+  }
+  $pageroot .= $plugin->view_loc;
+
+  my $path = $arg || $app->request->path;
+
+  # If any one of these returns content then we stop processing any more of them
+  # Content is defined as an array ref (it's an Obj2HTML array), a hashref with a "content" element, or a scalar (assumed HTML string - it's not checked!)
+  # This can lead to some interesting results if someone doesn't explicitly return undef when they want to fall through to the next file
+  # as perl will return the last evaluated value, which would be intepretted as content according to the above rules
+
+  my $merger = Hash::Merge->new('RIGHT_PRECEDENT');
+
+  my $stash = $opts{stash} || {};
+
+  # Safety first...
+  $path =~ s|/$|"/".$plugin->default_file|e;
+  $path =~ s|^/+||;
+  $path =~ s|\.\./||g;
+  $path =~ s|~||g;
+
+  if (!$path) { $path = $plugin->default_file; }
+  if (-d $pageroot."/$path") {
+    if ($path !~ /\/$/) {
+      $path .= "/".$plugin->default_file;
+    } else {
+      return {
+        url => "/$path/",
+        redirect => 1,
+        done => 1
+      };
+    }
+  }
+OUTER:
+  foreach my $ext (@{$plugin->view_extension_list}) {
+    foreach my $fmt (@{$accept}) {
+      if (defined $acceptext->{$fmt}) {
+        foreach my $m ("", "-$method", "-ANY") {
+          my $cururl = $path;
+          my @path = ();
+          # This iterates back through the path to find the closest FILE downstream, using the rest of the url as a "path" argument          
+          if ($plugin->trace) { print STDERR "DoFile Test: ".$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext."\n"; }
+          while (!-f $pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext && $cururl =~ s/\/([^\/]*)$//) {
+            if ($1) { unshift(@path, $1); }
+            if ($plugin->trace) { print STDERR "DoFile Test: ".$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext."\n"; }
+          }
+
+          # "Do" the file
+          if ($cururl) {
+            my $result;
+            if (defined $dofiles{$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext}) {
+              $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext} = { origin => "cache", order => $stash->{dofiles_executed}++ };
+              $result = $dofiles{$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+
+            } elsif (-f $pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext) {
+              $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext} = { origin => "file", order => $stash->{dofiles_executed}++ };
+
+              our $args = { path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env };
+
+              $result = do($pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext);
+              if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$acceptext->{$fmt}.$ext: $@ $!\n"); }
+              if (ref $result eq "CODE") {
+                $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{cached} = 1;
+                $dofiles{$pageroot."/".$cururl.$m.$acceptext->{$fmt}.$ext} = $result;
+                $result = $result->($args);
+              }
+            }
+
+            # We need to reassign the stash to the opts hash as the merge will have destroyed the old stash
+            $opts{stash} = $stash;
+
+            if (defined $result && ref $result eq "HASH") {
+              $result->{'content-type'} = $acceptext->{$fmt};
+              $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{last} = 1;
+              return $result;
+
+            } elsif (ref $result eq "ARRAY") {
+              $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{last} = 1;
+              return { 'content-type' => $acceptext->{$fmt}, content => $result };
+
+            } elsif (!ref $result && $result) {
+              # do we assume this is HTML? Or a file to use in templating? Who knows!
+              $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{last} = 1;
+              return { 'content-type' => $acceptext->{$fmt}, content => $result };
+
+            }
+          }
+        }
+      }
+    }
+  }
+
+  # If we got here we didn't find a do file that returned some content
+  return { status => 404 };
+
+}
+
+
+# Backward compatibility
+sub dofile {
   my $plugin = shift;
   my $arg = shift;
   my %opts = @_;
