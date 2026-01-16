@@ -34,7 +34,10 @@ has view_extension_list => (
     is      => 'rw',
     default => sub { ['.view','.po'] }
 );
-
+has controller_calls_view => (
+    is      => 'rw',
+    default => sub { 1; }
+);
 has default_file => (
     is      => 'rw',
     default => sub {'index'},
@@ -57,7 +60,7 @@ has extension_list => (
 );
 
 # Old method
-plugin_keywords 'dofile';
+# plugin_keywords 'dofile';
 
 # New methods
 plugin_keywords 'controller';
@@ -75,7 +78,7 @@ sub BUILD {
     my $settings = $self->config;
 
     $settings->{$_} and $self->$_( $settings->{$_} )
-      for qw/ page_loc default_file extension_list controller_loc controller_extension_list view_loc view_extension_list timings /;
+      for qw/ page_loc default_file extension_list controller_loc controller_extension_list view_loc view_extension_list timings controller_calls_view /;
 }
 
 sub controller {
@@ -139,10 +142,10 @@ OUTER:
           $stash->{dofiles}->{$cururl.$m.$ext} = { type => 'controller', origin => 'cache', order => $stash->{dofiles_executed}++ };
           if ($plugin->timings) {
             my $start = time();
-            $result = $dofiles{$pageroot.'/'.$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+            $result = $dofiles{$pageroot.'/'.$cururl.$m.$ext}->{render}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
             $stash->{dofiles}->{$cururl.$m.$ext}->{time} = time() - $start;
           } else {
-            $result = $dofiles{$pageroot.'/'.$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+            $result = $dofiles{$pageroot.'/'.$cururl.$m.$ext}->{render}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
           }
 
         } elsif (-f $pageroot.'/'.$cururl.$m.$ext) {
@@ -152,15 +155,26 @@ OUTER:
 
           $result = do($pageroot.'/'.$cururl.$m.$ext);
           if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$ext: $@ $!\n"); }
+
           if (ref $result eq 'CODE') {
+            my $code = $result;
+            $result = { render => $code };
+          }
+          if (ref $result eq 'HASH' && defined $result->{render}) {
             $stash->{dofiles}->{$cururl.$m.$ext}->{cached} = 1;
             $dofiles{$pageroot.'/'.$cururl.$m.$ext} = $result;
+
+            if (defined $result->{permission}) {
+              my $pass = check_permission_any($app->session, [ $result->{permission}, 'always' ]);
+              if (!$pass) { return { redirect => "forward", status => 401, url => '/sitefiles/not-permitted', done => 1 }; }
+            }
+
             if ($plugin->timings) {
               my $start = time();
-              $result = $result->($args);
+              $result = $result->{render}->($args);
               $stash->{dofiles}->{$cururl.$m.$ext}->{time} = time() - $start;
             } else {
-              $result = $result->($args);
+              $result = $result->{render}->($args);
             }
           }
         }
@@ -174,7 +188,11 @@ OUTER:
           if (defined $result->{view} && $result->{done}) {
             $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
             $stash->{'controller_result'} = $result;
-            return $plugin->view($result->{view}, path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env );
+            if ($plugin->controller_calls_view) {
+              return $plugin->view($result->{view}, path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env );
+            } else {
+              return $result;
+            }
 
           } elsif (defined $result->{content} || $result->{url} || $result->{done}) {
             $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
@@ -198,11 +216,15 @@ OUTER:
 
   # If we got here we didn't find a controller. We should fail over to see if it's just a view on its own (effectively this module or the route acts as the controller)
   $opts{stash} = $stash;
-  if ($stash->{view}) {
-    $opts{'controller_arg'} = $arg;
-    return $plugin->view($stash->{view}, %opts);
+  if ($plugin->controller_calls_view) {
+    if ($stash->{view}) {
+      $opts{'controller_arg'} = $arg;
+      return $plugin->view($stash->{view}, %opts);
+    } else {
+      return $plugin->view($arg, %opts);
+    }
   } else {
-    return $plugin->view($arg, %opts);
+    return $stash;
   }
 
 }
@@ -240,7 +262,9 @@ sub view {
   $path =~ s|\.\./||g;
   $path =~ s|~||g;
 
-  if (!$path) { $path = $plugin->default_file; }
+  if (!$path) {
+    $path = $plugin->default_file;
+  }
   if (-d $pageroot."/$path") {
     if ($path !~ /\/$/) {
       $path .= '/'.$plugin->default_file;
@@ -271,10 +295,10 @@ OUTER:
               $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext} = { type => 'view', origin => 'cache', order => $stash->{dofiles_executed}++ };
               if ($plugin->timings) {
                 my $start = time();
-                $result = $dofiles{$pageroot.'/'.$cururl.$m.$acceptext->{$fmt}.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+                $result = $dofiles{$pageroot.'/'.$cururl.$m.$acceptext->{$fmt}.$ext}->{render}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
                 $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{time} = time() - $start;
               } else {
-                $result = $dofiles{$pageroot.'/'.$cururl.$m.$acceptext->{$fmt}.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
+                $result = $dofiles{$pageroot.'/'.$cururl.$m.$acceptext->{$fmt}.$ext}->{render}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
               }
 
             } elsif (-f $pageroot.'/'.$cururl.$m.$acceptext->{$fmt}.$ext) {
@@ -284,15 +308,26 @@ OUTER:
 
               $result = do($pageroot.'/'.$cururl.$m.$acceptext->{$fmt}.$ext);
               if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$acceptext->{$fmt}.$ext: $@ $!\n"); }
+
               if (ref $result eq 'CODE') {
+                my $code = $result;
+                $result = { render => $code };
+              }
+              if (ref $result eq 'HASH' && defined $result->{render}) {
                 $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{cached} = 1;
                 $dofiles{$pageroot.'/'.$cururl.$m.$acceptext->{$fmt}.$ext} = $result;
+
+                if (defined $result->{permission}) {
+                  my $pass = check_permission_any($app->session, [ $result->{permission}, 'always' ]);
+                  if (!$pass) { return { redirect => "forward", status => 401, url => '/sitefiles/not-permitted', done => 1 }; }
+                }
+
                 if ($plugin->timings) {
                   my $start = time();
-                  $result = $result->($args);
+                  $result = $result->{render}->($args);
                   $stash->{dofiles}->{$cururl.$m.$acceptext->{$fmt}.$ext}->{time} = time() - $start;
                 } else {
-                  $result = $result->($args);
+                  $result = $result->{render}->($args);
                 }
               }
             }
@@ -319,116 +354,12 @@ OUTER:
   }
 
   # If we got here we didn't find a do file that returned some content
-  return { status => 404 };
-
-}
-
-
-# Backward compatibility
-sub dofile {
-  my $plugin = shift;
-  my $arg = shift;
-  my %opts = @_;
-
-  my $app = $plugin->app;
-  my $settings = $app->settings;
-  my $method = $app->request->method;
-  my $pageroot = $settings->{appdir};
-  if ($pageroot !~ /\/$/) {
-    $pageroot .= '/';
-  }
-  $pageroot .= $plugin->page_loc;
-
-  my $path = $arg || $app->request->path;
-
-  # If any one of these returns content then we stop processing any more of them
-  # Content is defined as an array ref (it's an Obj2HTML array), a hashref with a "content" element, or a scalar (assumed HTML string - it's not checked!)
-  # This can lead to some interesting results if someone doesn't explicitly return undef when they want to fall through to the next file
-  # as perl will return the last evaluated value, which would be intepretted as content according to the above rules
-
-  my $stash = $opts{stash} || {};
-
-  # Safety first...
-  $path =~ s|/$|'/'.$plugin->default_file|e;
-  $path =~ s|^/+||;
-  $path =~ s|\.\./||g;
-  $path =~ s|~||g;
-
-  if (!$path) { $path = $plugin->default_file; }
-  if (-d $pageroot."/$path") {
-    if ($path =~ /\/$/) {
-      $path .= '/'.$plugin->default_file;
-    } else {
-      return {
-        url => "/$path/",
-        redirect => 1,
-        done => 1
-      };
-    }
+  if ($path !~ /sitefiles/) {
+    return { status => 404, redirect => 'forward', url => '/sitefiles/not-found', done => 1 };
+  } else {
+    return { status => 404, title => 'Not found', content => [ p => 'Not found' ] };
   }
 
-  if (!defined $stash->{dofiles_executed}) { $stash->{dofiles_executed} = 0; }
-OUTER:
-  foreach my $ext (@{$plugin->extension_list}) {
-    foreach my $m ('', "-$method") {
-      my $cururl = $path;
-      my @path = ();
-
-      # This iterates back through the path to find the closest FILE downstream, using the rest of the url as a "path" argument
-      while (!-f $pageroot.'/'.$cururl.$m.$ext && $cururl =~ s/\/([^\/]*)$//) {
-        if ($1) { unshift(@path, $1); }
-      }
-
-      # "Do" the file
-      if ($cururl) {
-        my $result;
-        if (defined $dofiles{$pageroot.'/'.$cururl.$m.$ext}) {
-          $stash->{dofiles}->{$cururl.$m.$ext} = { origin => 'cache', order => $stash->{dofiles_executed}++ };
-          $result = $dofiles{$pageroot.'/'.$cururl.$m.$ext}->({path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env});
-
-        } elsif (-f $pageroot.'/'.$cururl.$m.$ext) {
-          $stash->{dofiles}->{$cururl.$m.$ext} = { origin => 'file', order => $stash->{dofiles_executed}++ };
-
-          our $args = { path => \@path, this_url => $cururl, dofile_plugin => $plugin, stash => $stash, env => $app->request->env };
-
-          $result = do($pageroot.'/'.$cururl.$m.$ext);
-          if ($@ || $!) { $plugin->app->log( error => "Error processing $pageroot / $cururl.$m.$ext: $@ $!\n"); }
-          if (ref $result eq 'CODE') {
-            $stash->{dofiles}->{$cururl.$m.$ext}->{cached} = 1;
-            $dofiles{$pageroot.'/'.$cururl.$m.$ext} = $result;
-            $result = $result->($args);
-          }
-        }
-
-        if (defined $result && ref $result eq 'HASH') {
-          if (defined $result->{url} && !defined $result->{done}) {
-            $path = $result->{url};
-            next OUTER;
-          }
-          if (defined $result->{content} || $result->{url} || $result->{done}) {
-            $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
-            return $result;
-          } else {
-            merge($stash, $result);
-          }
-          # Move on to the next file
-
-        } elsif (ref $result eq 'ARRAY') {
-          $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
-          return { content => $result };
-
-        } elsif (!ref $result && $result) {
-          # do we assume this is HTML? Or a file to use in templating? Who knows!
-          $stash->{dofiles}->{$cururl.$m.$ext}->{last} = 1;
-          return { content => $result };
-
-        }
-      }
-    }
-  }
-
-  # If we got here we didn't find a do file that returned some content
-  return { status => 404 };
 }
 
 sub view_pathname {
@@ -453,6 +384,20 @@ sub merge {
       $src->{$k} = $dup->{$k};
     }
   }
+}
+
+sub check_permission_any {
+  my $app = shift;
+  my $perm = shift;
+  my $mypermissions = shift || $app->read('permission');
+  if (!defined $mypermissions || ref $mypermissions ne "HASH") { return 0; }
+
+  if (ref $perm eq "ARRAY") {
+    foreach my $p (@{$perm}) {
+      if (defined $mypermissions->{$p}) { return 1; }
+    }
+  }
+  return 0;
 }
 
 1;
